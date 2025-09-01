@@ -26,7 +26,7 @@ Soğuk havada ve sabahın köründe işe gitmek zorunda olduğu için usanmışt
 Soğuk havada işe gittiği için hoşnut değildir.
 Erken saatte işe gitmekten dolayı bıkmıştır.
 Soğuk havada işe gittiği için mutlu değildir.
-Notlandırma örnekleri:
+Notlandırma örnekleri (eğer tam puan 10 ise):
 10 puan: Ruh halini anlatıyor ve sebebi de var.
 5 puan: Ruh halini anlatıyor ama sebebi yok.
 0 puan: Ruh halini anlatmıyor.
