@@ -1,33 +1,30 @@
 from rest_framework.decorators import api_view, permission_classes, parser_classes
-from rest_framework.permissions import AllowAny # Şimdilik kimlik doğrulaması yok
+from rest_framework.permissions import AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework import status
 from PIL import Image
 import requests
 import json
-import time
-import torch
+import base64
+import os
+import io
 
-# Modelimizi apps.py dosyasından alıyoruz
-from .apps import SinavokuyucuConfig
+# Ollama'daki modelin API adresi
+OLLAMA_API_URL = "http://localhost:11434/api/chat"
+
+# Kullanılacak modellerin adları
+VISION_MODEL_NAME = "llama3.2-vision:11b"
+TEXT_MODEL_NAME = "llama-3p1-8b"
 
 @api_view(['POST'])
-@permission_classes([AllowAny]) # Herkese açık endpoint
-@parser_classes([MultiPartParser, FormParser]) # Resim dosyası alabilmek için
+@permission_classes([AllowAny])
+@parser_classes([MultiPartParser, FormParser])
 def grade_handwritten_answer(request):
     """
-    El yazısı ile yazılmış bir cevabı resim olarak alır, metne çevirir
-    ve Llama modeli ile notlandırır.
+    Gelen el yazısı resmini Llama Vision ile metne çevirir,
+    ardından Llama-3p1-8b ile notlandırır.
     """
-    # Gerekli modellerin yüklenip yüklenmediğini kontrol et
-    if not SinavokuyucuConfig.trocr_model or not SinavokuyucuConfig.trocr_processor:
-        return Response(
-            {"detail": "AI modelleri henüz hazır değil, lütfen sunucuyu kontrol edin."},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE
-        )
-
-    # İstekten verileri al
     handwritten_image = request.FILES.get('image')
     question_text = request.data.get('question')
     reference_text = request.data.get('reference_text')
@@ -35,78 +32,104 @@ def grade_handwritten_answer(request):
 
     if not all([handwritten_image, question_text, reference_text, grading_criteria]):
         return Response(
-            {"detail": "Lütfen 'image', 'question', 'reference_text' ve 'criteria' alanlarını sağlayın."},
+            {"detail": "Please provide 'image', 'question', 'reference_text', and 'criteria'."},
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # --- 1. Adım: TrOCR ile El Yazısını Metne Çevirme ---
-    student_answer_text = ""
     try:
-        image = Image.open(handwritten_image).convert("RGB")
-        
-        processor = SinavokuyucuConfig.trocr_processor
-        model = SinavokuyucuConfig.trocr_model
-        device = model.device
-
-        pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
-        generated_ids = model.generate(pixel_values)
-        student_answer_text = processor.batch_decode(generated_ids, skip_special_tokens=True)[0]
-        
-        print(f"TrOCR Çıktısı: {student_answer_text}")
-
+        # Gelen resmi base64 formatına çevir
+        image_bytes = handwritten_image.read()
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
     except Exception as e:
-        return Response({"detail": f"El yazısı tanıma hatası: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"detail": f"Error processing image file: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # --- 2. Adım: Llama için Prompt Hazırlama ---
-    prompt = f"""
-    Sen bir sınav kağıdı okuyan bir öğretmensin. Görevin, öğrencinin cevabını sana verilen referans metin, soru ve değerlendirme kriterlerine göre notlandırmaktır. Cevabını sadece ve sadece JSON formatında, 'grade' ve 'reason' anahtarlarıyla vermelisin.
+    # --- 1. Adım: Llama Vision ile el yazısını metne çevir ---
+    try:
+        ocr_prompt = "Transcribe the handwritten text in the image. Do not add any extra information or analysis. Just return the raw text."
+        ocr_data = {
+            "model": VISION_MODEL_NAME,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": ocr_prompt,
+                    "images": [image_base64]
+                }
+            ],
+            "stream": False
+        }
+        ocr_response = requests.post(OLLAMA_API_URL, json=ocr_data, timeout=120)
+        ocr_response.raise_for_status()
+        ocr_output = json.loads(ocr_response.text)
+        student_answer_text = ocr_output['message']['content'].strip()
+    except Exception as e:
+        return Response(
+            {"detail": f"Handwritten text transcription failed. Error: {e}"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
-    Referans Metin:
+    # --- 2. Adım: Llama-3p1-8b ile notlandırma yap ---
+    grading_prompt = f"""
+    You are a teacher grading an exam paper. Your task is to grade the student's answer based on the provided reference text, question, and grading criteria.
+    
+    You must provide your answer in a JSON format with 'grade' and 'reason' keys.
+    
+    Reference Text:
     ---
     {reference_text}
     ---
-
-    Soru:
+    
+    Question:
     ---
     {question_text}
     ---
-
-    Değerlendirme Kriterleri:
+    
+    Grading Criteria:
     ---
     {grading_criteria}
     ---
-
-    Öğrencinin Cevabı:
+    
+    Student's Answer:
     ---
     {student_answer_text}
     ---
-
-    Değerlendirme (Sadece JSON formatında):
+    
+    Grading (JSON Only):
     """
 
-    # --- 3. Adım: Llama'ya İstek Gönderme ---
-    ollama_api_url = "http://localhost:11434/api/generate"
-    try:
-        ollama_response = requests.post(
-            ollama_api_url,
-            json={"model": "llama-3p1-8b", "prompt": prompt, "stream": False}
-        )
-        ollama_response.raise_for_status()
+    grading_data = {
+        "model": TEXT_MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": grading_prompt,
+            }
+        ],
+        "stream": False
+    }
 
-        llm_output = json.loads(ollama_response.text)
-        grading_result_str = llm_output['response']
-        grading_result_json = json.loads(grading_result_str)
+    try:
+        grading_response = requests.post(OLLAMA_API_URL, json=grading_data, timeout=180)
+        grading_response.raise_for_status()
+        llm_output = json.loads(grading_response.text)
+        grading_result_str = llm_output['message']['content']
         
+        # JSON çıktısını doğrulamayı deneyelim
+        try:
+            grading_result_json = json.loads(grading_result_str)
+        except json.JSONDecodeError:
+            grading_result_json = {"error": "Invalid JSON format from LLM", "raw_response": grading_result_str}
+
         final_response = {
             "transcribed_answer": student_answer_text,
-            "grading": grading_result_json
+            "grading": grading_result_json,
         }
+        
         return Response(final_response, status=status.HTTP_200_OK)
 
-    except json.JSONDecodeError:
+    except requests.exceptions.RequestException as e:
         return Response(
-            {"detail": "Llama modeli geçerli bir JSON formatında cevap vermedi.", "raw_response": grading_result_str},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            {"detail": f"Grading model connection error or not ready. Error: {e}"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
     except Exception as e:
-        return Response({"detail": f"Notlandırma sırasında hata: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"detail": f"An unexpected error occurred during grading: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
