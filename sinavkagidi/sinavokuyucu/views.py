@@ -262,3 +262,105 @@ def grade_full_page_answers(request):
         }
     }
     return Response(final_response, status=status.HTTP_200_OK)
+
+
+
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def grade_text_answer(request):
+    """
+    Doğrudan metin olarak verilen öğrenci cevabını, soru ve kriterlere göre
+    Llama-3p1-8b ile notlandırır. Kriterler opsiyoneldir.
+    """
+    question_text = request.data.get('question')
+    reference_text = request.data.get('reference_text')
+    grading_criteria = request.data.get('criteria', '').strip() # Opsiyonel hale getirildi
+    student_answer_text = request.data.get('answer')
+
+    if not all([question_text, reference_text, student_answer_text]):
+        return Response(
+            {"detail": "Lütfen 'question', 'reference_text' ve 'answer' alanlarını doldurun."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Notlandırma prompt'unu kriter olup olmamasına göre oluştur
+    if grading_criteria:
+        prompt_criteria_part = f"""
+    Grading Criteria:
+    ---
+    {grading_criteria}
+    ---
+        """
+    else:
+        prompt_criteria_part = f"""
+    Kriterler sağlanmamıştır, lütfen öğrenci cevabını referans metin ve soruyla karşılaştırarak kendi değerlendirmenizi yapın. Notu, referans metnine ne kadar yaklaştığına göre verin.
+        """
+
+    grading_prompt = f"""
+    You are a teacher grading an exam paper. Your task is to grade the student's answer based on the provided reference text, question, and if available, grading criteria.
+    
+    You must provide your answer in a JSON format with 'grade' and 'reason' keys.
+    
+    Reference Text:
+    ---
+    {reference_text}
+    ---
+    
+    Question:
+    ---
+    {question_text}
+    ---
+    
+    {prompt_criteria_part}
+    
+    Student's Answer:
+    ---
+    {student_answer_text}
+    ---
+    
+    Grading (JSON Only):
+    """
+    
+    # Llama-3p1-8b ile notlandırma adımı (geri kalan kod aynı kalır)
+    # ... (buraya önceki yanıttaki kodun geri kalanını ekleyin)
+    start_time_grading = time.time()
+    grading_data = {
+        "model": TEXT_MODEL_NAME,
+        "messages": [
+            {
+                "role": "user",
+                "content": grading_prompt,
+            }
+        ],
+        "stream": False
+    }
+    try:
+        grading_response = requests.post(OLLAMA_API_URL, json=grading_data, timeout=180)
+        grading_response.raise_for_status()
+        llm_output = json.loads(grading_response.text)
+        grading_result_str = llm_output['message']['content']
+        
+        try:
+            grading_result_json = json.loads(grading_result_str)
+        except json.JSONDecodeError:
+            grading_result_json = {"error": "Invalid JSON format from LLM", "raw_response": grading_result_str}
+    except requests.exceptions.RequestException as e:
+        return Response(
+            {"detail": f"Grading model connection error or not ready. Error: {e}"},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+    except Exception as e:
+        return Response({"detail": f"An unexpected error occurred during grading: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    end_time_grading = time.time()
+    grading_duration = (end_time_grading - start_time_grading) * 1000
+
+    final_response = {
+        "transcribed_answer": student_answer_text,
+        "grading": grading_result_json,
+        "processing_times_ms": {
+            "llama_grading": round(grading_duration, 2),
+        }
+    }
+    return Response(final_response, status=status.HTTP_200_OK)
