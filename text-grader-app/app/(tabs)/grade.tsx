@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, TextInput, Button, Alert, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TextInput, Button, Alert, ScrollView, KeyboardAvoidingView, Platform, TouchableOpacity } from 'react-native';
 import axios from 'axios';
+import { FontAwesome } from '@expo/vector-icons';
 
-// API yanıtının yapısını tanımlayan TypeScript arayüzleri
 interface GradingResult {
   grade: string;
   reason: string;
@@ -18,7 +18,7 @@ interface GradingResponse {
   processing_times_ms: ProcessingTimes;
 }
 
-const API_URL = "http://192.168.1.14:8000/api/sinav/grade-text/"; // Kendi IP adresinizle güncelleyin
+const API_URL = "http://192.168.1.14:8000/api/sinav/grade-text/";
 
 export default function GradeScreen() {
   const [question, setQuestion] = useState("");
@@ -26,8 +26,11 @@ export default function GradeScreen() {
   const [criteria, setCriteria] = useState("");
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
-  // 'result' state'inin tipini GradingResponse veya null olarak belirtiyoruz
   const [result, setResult] = useState<GradingResponse | null>(null);
+
+  const handleClear = (setter: React.Dispatch<React.SetStateAction<string>>) => {
+    setter("");
+  };
 
   const handleGrade = async () => {
     if (!question || !referenceText || !answer) {
@@ -61,60 +64,95 @@ export default function GradeScreen() {
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.title}>Metin Tabanlı Notlandırma</Text>
-      
-      <TextInput
-        style={styles.input}
-        placeholder="Soru Metni"
-        value={question}
-        onChangeText={setQuestion}
-        multiline
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Referans Metni"
-        value={referenceText}
-        onChangeText={setReferenceText}
-        multiline
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Notlandırma Kriterleri (Opsiyonel)"
-        value={criteria}
-        onChangeText={setCriteria}
-        multiline
-      />
-      <TextInput
-        style={styles.input}
-        placeholder="Öğrenci Cevabı"
-        value={answer}
-        onChangeText={setAnswer}
-        multiline
-      />
-      
-      <Button
-        title={loading ? "Yükleniyor..." : "Notlandır"}
-        onPress={handleGrade}
-        disabled={loading}
-      />
-      
-      {/* Opsiyonel zincirleme ile güvenli erişim sağlıyoruz */}
-      {result && (
-        <View style={styles.resultContainer}>
-          <Text style={styles.resultTitle}>Notlandırma Sonucu:</Text>
-          <Text>
-            <Text style={{ fontWeight: 'bold' }}>Not:</Text> {result.grading?.grade}
-          </Text>
-          <Text>
-            <Text style={{ fontWeight: 'bold' }}>Gerekçe:</Text> {result.grading?.reason}
-          </Text>
-          <Text style={{ marginTop: 10 }}>
-            <Text style={{ fontWeight: 'bold' }}>İşleme Süresi:</Text> {result.processing_times_ms?.llama_grading} ms
-          </Text>
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+        <Text style={styles.title}>Metin Tabanlı Notlandırma</Text>
+        
+        <Text style={styles.formLabel}>Referans Metni</Text>
+        <View style={styles.inputContainer}>
+          <TextInput
+            style={styles.input}
+            placeholder="Örnek cevap için referans metnini giriniz..."
+            placeholderTextColor="gray"
+            value={referenceText}
+            onChangeText={setReferenceText}
+            multiline
+          />
+          <TouchableOpacity onPress={() => handleClear(setReferenceText)} style={styles.clearButton}>
+            <FontAwesome name="times-circle" size={24} color="gray" />
+          </TouchableOpacity>
         </View>
-      )}
-    </ScrollView>
+
+        <Text style={styles.formLabel}>Soru Metni</Text>
+        <View style={styles.inputContainer}>
+          <TextInput
+            style={styles.input}
+            placeholder="Lütfen soruyu giriniz..."
+            placeholderTextColor="gray"
+            value={question}
+            onChangeText={setQuestion}
+            multiline
+          />
+          <TouchableOpacity onPress={() => handleClear(setQuestion)} style={styles.clearButton}>
+            <FontAwesome name="times-circle" size={24} color="gray" />
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.formLabel}>Notlandırma Kriterleri</Text>
+        <View style={styles.inputContainer}>
+          <TextInput
+            style={styles.input}
+            placeholder="Puanlandırma neye göre yapılacak giriniz (Opsiyonel)"
+            placeholderTextColor="gray"
+            value={criteria}
+            onChangeText={setCriteria}
+            multiline
+          />
+          <TouchableOpacity onPress={() => handleClear(setCriteria)} style={styles.clearButton}>
+            <FontAwesome name="times-circle" size={24} color="gray" />
+          </TouchableOpacity>
+        </View>
+
+        <Text style={styles.formLabel}>Öğrenci Cevabı</Text>
+        <View style={styles.inputContainer}>
+          <TextInput
+            style={styles.input}
+            placeholder="Öğrencinin cevabını giriniz..."
+            placeholderTextColor="gray"
+            value={answer}
+            onChangeText={setAnswer}
+            multiline
+          />
+          <TouchableOpacity onPress={() => handleClear(setAnswer)} style={styles.clearButton}>
+            <FontAwesome name="times-circle" size={24} color="gray" />
+          </TouchableOpacity>
+        </View>
+        
+        <Button
+          title={loading ? "Yükleniyor..." : "Notlandır"}
+          onPress={handleGrade}
+          disabled={loading}
+        />
+        
+        {result && (
+          <View style={styles.resultContainer}>
+            <Text style={styles.resultTitle}>Notlandırma Sonucu:</Text>
+            <Text>
+              <Text style={{ fontWeight: 'bold' }}>Not:</Text> {result.grading?.grade}
+            </Text>
+            <Text>
+              <Text style={{ fontWeight: 'bold' }}>Gerekçe:</Text> {result.grading?.reason}
+            </Text>
+            <Text style={{ marginTop: 10 }}>
+              <Text style={{ fontWeight: 'bold' }}>İşleme Süresi:</Text> {result.processing_times_ms?.llama_grading} ms
+            </Text>
+          </View>
+        )}
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -131,15 +169,32 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: 20,
   },
-  input: {
+  inputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
     width: '100%',
-    minHeight: 80,
+    marginBottom: 10,
     borderColor: 'gray',
     borderWidth: 1,
     borderRadius: 5,
-    marginBottom: 10,
+    backgroundColor: '#f9f9f9',
+  },
+  formLabel: {
+    alignSelf: 'flex-start',
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginTop: 10,
+    marginBottom: 5,
+  },
+  input: {
+    flex: 1,
+    minHeight: 80,
     padding: 10,
     textAlignVertical: 'top',
+    color: '#000',
+  },
+  clearButton: {
+    padding: 10,
   },
   resultContainer: {
     marginTop: 20,
