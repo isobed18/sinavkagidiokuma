@@ -4,7 +4,8 @@ import requests
 import base64
 import csv
 import io
-
+import re  # Regex kütüphanesi eklendi
+import traceback
 from rest_framework.decorators import api_view, permission_classes, parser_classes
 from rest_framework.permissions import AllowAny
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -12,81 +13,95 @@ from rest_framework.response import Response
 from rest_framework import status
 from django.http import FileResponse
 
-# Ollama'daki modelin API adresi
+# --- Ayarlar ---
 OLLAMA_API_URL = "http://localhost:11434/api/chat"
-
-# Kullanılacak modellerin adları
 VISION_MODEL_NAME = "llama3.2-vision:11b"
-TEXT_MODEL_NAME = "llama-3p1-8b"
+TEXT_MODEL_NAME = "llama3.1:8b"
+
+# --- Çekirdek Fonksiyon: LLM ile Notlandırma ---
 
 
 def get_llm_grading(question_text, reference_text, student_answer_text, grading_criteria=None):
     """
-    LLM'den notlandırma yanıtı almak için bir yardımcı fonksiyon.
+    LLM'den notlandırma yanıtı almak için tasarlanmış merkezi fonksiyon.
+    Prompt engineering, JSON temizleme ve detaylı loglama içerir.
     """
+    # Detaylı Loglama: Hangi cevabın işlendiğini net olarak gösterir.
+    print("\n" + "="*80)
+    print(f"DEĞERLENDİRİLEN ÖĞRENCİ CEVABI: '{student_answer_text}'")
+    print("="*80)
+    
     print(f"ADIM: Notlandırma için {TEXT_MODEL_NAME} modeli çağrılıyor...")
     start_time_grading = time.time()
 
+    prompt_criteria_part = ""
     if grading_criteria:
         prompt_criteria_part = f"""
-    Grading Criteria:
+    3. Değerlendirmeyi yaparken aşağıdaki özel kriterleri de göz önünde bulundur:
     ---
     {grading_criteria}
     ---
         """
-    else:
-        prompt_criteria_part = f"""
-    Kriterler sağlanmamıştır, lütfen öğrenci cevabını referans metin ve soruyla karşılaştırarak kendi değerlendirmenizi yapın. Notu, referans metnine ne kadar yaklaştığına göre verin.
-        """
 
     grading_prompt = f"""
-    You are a teacher grading an exam paper. Your task is to grade the student's answer based on the provided reference text, question, and if available, grading criteria.
-    
-    You must provide your answer in a JSON format with 'grade' and 'reason' keys.
-    
-    Reference Text:
+    Sen adil ve katı bir öğretmensin. Görevin, verilen "Öğrenci Cevabını", "Referans Metin" ile karşılaştırarak notlandırmak.
+
+    UYMAN GEREKEN KESİN KURALLAR:
+    1. Gerekçeni ("reason") SADECE ve SADECE öğrencinin yazdığı metin üzerine kur. Öğrencinin bahsetmediği konuları değerlendirme veya kendi kendine yorum ekleme.
+    2. Referans metinde olup öğrencinin cevabında olmayan eksiklikleri belirt.
+    3. Öğrencinin cevabı tamamen yanlış veya alakasız ise bunu gerekçede açıkça belirt.
+    4. Yanıtın SADECE ve SADECE "grade" ve "reason" anahtarlarını içeren geçerli bir JSON nesnesi olmalıdır. ASLA Markdown (```), ek açıklama veya başka bir metin ekleme.
+
+    Referans Metin (Doğru Cevap):
     ---
     {reference_text}
     ---
     
-    Question:
+    Soru:
     ---
     {question_text}
     ---
     
     {prompt_criteria_part}
     
-    Student's Answer:
+    Öğrenci Cevabı:
     ---
     {student_answer_text}
     ---
     
-    Grading (JSON Only):
+    Notlandırma (Sadece JSON formatında, başka hiçbir metin olmadan):
     """
     
     grading_data = {
         "model": TEXT_MODEL_NAME,
-        "messages": [
-            {
-                "role": "user",
-                "content": grading_prompt,
-            }
-        ],
-        "stream": False
+        "messages": [{"role": "user", "content": grading_prompt}],
+        "stream": False,
+        "format": "json" 
     }
     
     try:
-        grading_response = requests.post(OLLAMA_API_URL, json=grading_data, timeout=20)
+        grading_response = requests.post(OLLAMA_API_URL, json=grading_data, timeout=45) # Timeout artırıldı
         grading_response.raise_for_status()
-        llm_output = json.loads(grading_response.text)
-        grading_result_str = llm_output['message']['content'].strip()
+        llm_output = grading_response.json()
+        
+        grading_result_str = llm_output.get('message', {}).get('content', '{}')
+        
         print(f"ADIM BAŞARILI: {TEXT_MODEL_NAME} modelinden dönen ham yanıt: {grading_result_str}")
         
-        try:
-            grading_result_json = json.loads(grading_result_str)
-        except json.JSONDecodeError:
-            print("UYARI: LLM'den geçersiz JSON formatı döndü. Ham yanıt saklanıyor.")
-            grading_result_json = {"error": "Invalid JSON format from LLM", "raw_response": grading_result_str}
+        # YENİ: Yanıttaki olası Markdown bloğunu temizleme (Regex ile)
+        match = re.search(r'\{.*\}', grading_result_str, re.DOTALL)
+        if match:
+            cleaned_str = match.group(0)
+            print(f"TEMİZLENMİŞ YANIT: {cleaned_str}")
+            try:
+                grading_result_json = json.loads(cleaned_str)
+            except json.JSONDecodeError:
+                print("UYARI: Temizlenmiş yanıtta JSON formatı bozuk. Ham yanıt saklanıyor.")
+                grading_result_json = {"grade": "JSON Hatası", "reason": f"Geçersiz JSON: {cleaned_str}"}
+        else:
+            print("UYARI: Yanıtta JSON nesnesi bulunamadı.")
+            grading_result_json = {"grade": "JSON Bulunamadı", "reason": f"Geçersiz Yanıt: {grading_result_str}"}
+
     except requests.exceptions.RequestException as e:
         print(f"HATA: Notlandırma modeli bağlantı hatası veya hazır değil. Hata: {e}")
         raise
@@ -96,12 +111,17 @@ def get_llm_grading(question_text, reference_text, student_answer_text, grading_
     
     end_time_grading = time.time()
     grading_duration = (end_time_grading - start_time_grading) * 1000
+    
+    grade_log = grading_result_json.get('grade', 'N/A')
+    reason_log = grading_result_json.get('reason', 'N/A')
+    print(f"VERİLEN NOT: {grade_log} | GEREKÇE: {reason_log}")
     print(f"{TEXT_MODEL_NAME} işlem süresi: {grading_duration:.2f} ms")
 
     return {
         "grading": grading_result_json,
         "processing_time": round(grading_duration, 2)
     }
+
 
 # API 1: Llama Vision + Llama 3 Tek Soruluk Değerlendirme
 @api_view(['POST'])
@@ -314,12 +334,15 @@ def grade_full_page_answers(request):
     return Response(final_response, status=status.HTTP_200_OK)
 
 
+
+
+# --- API View: Tek Metin Cevap ---
+
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def grade_text_answer(request):
     """
-    Doğrudan metin olarak verilen öğrenci cevabını, soru ve kriterlere göre
-    Llama-3p1-8b ile notlandırır. Kriterler opsiyoneldir.
+    Doğrudan metin olarak verilen öğrenci cevabını notlandırır.
     """
     question_text = request.data.get('question')
     reference_text = request.data.get('reference_text')
@@ -331,25 +354,22 @@ def grade_text_answer(request):
             {"detail": "Lütfen 'question', 'reference_text' ve 'answer' alanlarını doldurun."},
             status=status.HTTP_400_BAD_REQUEST
         )
-    print("API ÇAĞRISI: grade_text_answer")
+    print("\nAPI ÇAĞRISI: grade_text_answer")
     try:
         grading_result = get_llm_grading(question_text, reference_text, student_answer_text, grading_criteria)
     except Exception as e:
-        return Response(
-            {"detail": str(e)},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE
-        )
+        return Response({"detail": str(e)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     final_response = {
         "transcribed_answer": student_answer_text,
         "grading": grading_result['grading'],
-        "processing_times_ms": {
-            "llama_grading": grading_result['processing_time'],
-        }
+        "processing_times_ms": {"llama_grading": grading_result['processing_time']}
     }
     print(f"SONUÇ: Son yanıt döndürülüyor: {json.dumps(final_response, indent=2)}")
     return Response(final_response, status=status.HTTP_200_OK)
 
+
+# --- API View: Çoklu Cevap (CSV) ---
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
@@ -368,45 +388,80 @@ def grade_multiple_text_answers(request):
             {"detail": "Lütfen 'csv_file', 'question' ve 'reference_text' alanlarını doldurun."},
             status=status.HTTP_400_BAD_REQUEST
         )
-    print("API ÇAĞRISI: grade_multiple_text_answers")
+    print("\nAPI ÇAĞRISI: grade_multiple_text_answers")
 
     try:
-        file_data = csv_file.read().decode('utf-8')
-        reader = csv.DictReader(io.StringIO(file_data))
-        fieldnames = reader.fieldnames + ['llm_grade', 'llm_reason', 'processing_time_ms']
+        file_data = csv_file.read().decode('utf-8-sig')
         
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        reader = csv.DictReader(io.StringIO(file_data), delimiter=';')
+        
+        print(f"DEBUG: CSV'den okunan başlıklar: {reader.fieldnames}")
+        
+        rows = list(reader)
+        fieldnames = reader.fieldnames
+
+        if not rows:
+            print("UYARI: CSV dosyasından hiçbir veri satırı okunamadı.")
+            return Response({"detail": "CSV'de işlenecek veri bulunamadı."}, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            print(f"BİLGİ: CSV dosyasından {len(rows)} adet veri satırı okundu.")
+
+        if not fieldnames:
+            return Response({"detail": "CSV dosyası boş veya başlık satırı eksik."}, status=status.HTTP_400_BAD_REQUEST)
+        
+        new_fieldnames = list(fieldnames)
+        for field in ['llm_grade', 'llm_reason', 'processing_time_ms']:
+            if field not in new_fieldnames:
+                new_fieldnames.append(field)
+
+        temp_output = io.StringIO()
+        writer = csv.DictWriter(temp_output, fieldnames=new_fieldnames, delimiter=';')
         writer.writeheader()
 
-        for row in reader:
+        for i, row in enumerate(rows):
+            print(f"\n--- Satır {i+1}/{len(rows)} işleniyor ---")
+            
+            print(f"DEBUG: Okunan satır verisi: {row}")
+            
             student_answer = row.get('student_answer')
 
             if not student_answer:
-                row['llm_grade'] = 'Hata'
-                row['llm_reason'] = 'Eksik veri: Öğrenci cevabı yok.'
+                print(f"UYARI: Satır {i+1} 'student_answer' sütunu boş, atlanıyor.")
+                row['llm_grade'] = 'Eksik Veri'
+                row['llm_reason'] = 'CSV satırında student_answer sütunu boş veya bulunamadı.'
                 row['processing_time_ms'] = 0
-                writer.writerow(row)
-                continue
+            else:
+                try:
+                    print(f"--> get_llm_grading fonksiyonu çağrılıyor...")
+                    grading_result = get_llm_grading(question, reference_text, student_answer, grading_criteria)
+                    row['llm_grade'] = grading_result['grading'].get('grade', 'N/A')
+                    row['llm_reason'] = grading_result['grading'].get('reason', 'N/A')
+                    row['processing_time_ms'] = grading_result['processing_time']
+                except Exception as e:
+                    print(f"!!! HATA: Satır {i+1} işlenirken bir istisna (exception) oluştu.")
+                    traceback.print_exc() 
+                    
+                    row['llm_grade'] = 'API Hatası'
+                    row['llm_reason'] = str(e)
+                    row['processing_time_ms'] = 0
             
-            try:
-                grading_result = get_llm_grading(question, reference_text, student_answer, grading_criteria)
-                row['llm_grade'] = grading_result['grading'].get('grade')
-                row['llm_reason'] = grading_result['grading'].get('reason')
-                row['processing_time_ms'] = grading_result['processing_time']
-            except Exception as e:
-                row['llm_grade'] = 'API Hatası'
-                row['llm_reason'] = str(e)
-                row['processing_time_ms'] = 0
-            
+            if None in row:
+                del row[None]
             writer.writerow(row)
-            
-        output.seek(0)
-        return FileResponse(output, as_attachment=True, filename=f"graded_{csv_file.name}", content_type='text/csv')
+        
+        print("\nBİLGİ: Tüm satırların işlenmesi tamamlandı. Yanıt dosyası oluşturuluyor.")
+        
+        output_buffer = io.BytesIO()
+        output_buffer.write(temp_output.getvalue().encode('utf-8'))
+        output_buffer.seek(0)
+        
+        return FileResponse(output_buffer, as_attachment=True, filename=f"graded_{csv_file.name}", content_type='text/csv')
 
     except Exception as e:
         print(f"HATA: Çoklu notlandırma sırasında beklenmedik bir hata oluştu: {e}")
+        traceback.print_exc()
         return Response(
             {"detail": f"Dosya işlenirken bir hata oluştu: {e}"},
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
