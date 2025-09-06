@@ -44,33 +44,33 @@ def get_llm_grading(question_text, reference_text, student_answer_text, grading_
         """
 
     grading_prompt = f"""
-    Sen adil ve katı bir öğretmensin. Görevin, verilen "Öğrenci Cevabını", "Referans Metin" ile karşılaştırarak notlandırmak.
+You are a fair and strict teacher. Your task is to grade the given "Student Answer" by comparing it with the "Reference Text".
 
-    UYMAN GEREKEN KESİN KURALLAR:
-    1. Gerekçeni ("reason") SADECE ve SADECE öğrencinin yazdığı metin üzerine kur. Öğrencinin bahsetmediği konuları değerlendirme veya kendi kendine yorum ekleme.
-    2. Referans metinde olup öğrencinin cevabında olmayan eksiklikleri belirt.
-    3. Öğrencinin cevabı tamamen yanlış veya alakasız ise bunu gerekçede açıkça belirt.
-    4. Yanıtın SADECE ve SADECE "grade" ve "reason" anahtarlarını içeren geçerli bir JSON nesnesi olmalıdır. ASLA Markdown (```), ek açıklama veya başka bir metin ekleme.
+STRICT RULES YOU MUST FOLLOW:
+1. Base your reasoning ("reason") ONLY and ONLY on the text written by the student. Do not evaluate topics the student did not mention or add your own interpretations.
+2. State any missing points that are in the reference text but not in the student's answer.
+3. If the student's answer is completely wrong or irrelevant, state this clearly in the reasoning.
+4. The response MUST be a valid JSON object containing ONLY the "grade" and "reason" keys. NEVER add Markdown (```), additional explanations, or any other text.
 
-    Referans Metin (Doğru Cevap):
-    ---
-    {reference_text}
-    ---
-    
-    Soru:
-    ---
-    {question_text}
-    ---
-    
-    {prompt_criteria_part}
-    
-    Öğrenci Cevabı:
-    ---
-    {student_answer_text}
-    ---
-    
-    Notlandırma (Sadece JSON formatında, başka hiçbir metin olmadan):
-    """
+Reference Text (The Story):
+---
+{reference_text}
+---
+
+Question:
+---
+{question_text}
+---
+
+{prompt_criteria_part}
+
+Student Answer:
+---
+{student_answer_text}
+---
+
+Grading (Only in JSON format, without any other text):
+"""
     
     grading_data = {
         "model": TEXT_MODEL_NAME,
@@ -154,7 +154,7 @@ def grade_handwritten_answer(request):
     print("ADIM 1: Llama Vision modeli el yazısını metne çevirmek için çağrılıyor...")
     start_time_vision = time.time()
     try:
-        ocr_prompt = "Transcribe the handwritten text in the image. Do not add any extra information or analysis. Just return the raw text."
+        ocr_prompt = "Transcribe the handwritten text in the image. Do not add any extra information or analysis. Just return the raw text. As you can see there some questions and handwritten answers of a student"
         ocr_data = {
             "model": VISION_MODEL_NAME,
             "messages": [
@@ -202,139 +202,136 @@ def grade_handwritten_answer(request):
     return Response(final_response, status=status.HTTP_200_OK)
 
 # API 2: Llama Vision + Llama 3 Tam Sayfa İşleme
+# API 2: Llama Vision + Llama 3 Tam Sayfa İşleme
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @parser_classes([MultiPartParser, FormParser])
 def grade_full_page_answers(request):
     """
-    Tüm sayfanın fotoğrafını Llama Vision ile ham metne çevirir,
-    ardından Llama-3p1-8b ile soruları ve cevapları ayırır.
+    Tüm sayfanın fotoğrafını TEK BİR Llama Vision çağrısı ile ham metne çevirir,
+    ardından soruları ve cevapları notlandırır ve JSON olarak döner.
     """
     full_page_image = request.FILES.get('image')
 
     if not full_page_image:
         return Response(
-            {"detail": "Please provide an 'image' file."},
+            {"detail": "Lütfen 'image' dosyasını sağlayın."},
             status=status.HTTP_400_BAD_REQUEST
         )
-    print("API ÇAĞRISI: grade_full_page_answers")
+    print("API ÇAĞRISI: grade_full_page_answers (TAMAMEN LLAMA VISION)")
 
     try:
         image_bytes = full_page_image.read()
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
     except Exception as e:
         print(f"HATA: Resim dosyası işlenirken bir hata oluştu: {e}")
-        return Response({"detail": f"Error processing image file: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        return Response({"detail": f"Resim dosyası işleme hatası: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # Step 1: Llama Vision ile sadece ham metni çevir
-    print("ADIM 1: Llama Vision modeli tam sayfa metin çevirmek için çağrılıyor...")
-    start_time_vision = time.time()
+    # Adım 1: Llama Vision ile hem metin çıkarma hem de notlandırma
+    print("ADIM 1: Llama Vision modeli hem metin çevirme hem de notlandırma için çağrılıyor...")
+    start_time_vision_and_grading = time.time()
     try:
-        extraction_prompt = "Transcribe all text from the image, including questions and answers. Do not add any new text, formatting, or analysis. Just the raw text."
+        # PROMPT GÜNCELLEMESİ: Tek Llama Vision çağrısında hem OCR hem notlandırma
+        # Burada Llama Vision'ın hem görseli anlayıp hem de karmaşık JSON üretmesini istiyoruz.
+        # Bu, model için oldukça zorlayıcı bir prompt'tur.
+        vision_grading_prompt = f"""
+You are an AI assistant specialized in analyzing handwritten exam papers. Your task is to accurately grade a student's performance based on the provided image.
+
+Your process should be as follows:
+1. **Identify the exam questions** and their corresponding point values (e.g., "Question 6 (12 points)").
+2. **Identify the student's handwritten answers** for each question. Pay extremely close attention to the handwriting and **do not mistake any printed text** (like a story or a passage) as the student's answer. The student's answer is always the handwritten text that appears directly after the question.
+3. For each question, **determine the correct answer** based on the question's content and general knowledge.
+4. **Compare the student's handwritten answer** to the correct answer you determined.
+5. **Assign a numerical grade** based on the question's point value. For example, if a question is worth 12 points, a correct answer is '12/12', a partially correct answer might be '7/12', and a completely wrong answer is '0/12'.
+6. **Provide a detailed reason** for the grade, explaining what parts of the student's answer were correct, what was missing, or what was incorrect.
+
+Your final output MUST be a valid JSON array containing objects. Each object MUST have ONLY the following keys:
+- 'question': The full text of the question, including its point value.
+- 'answer': The exact transcribed text of the **student's handwritten answer**.
+- 'grade': The numerical score (e.g., '12/12').
+- 'reason': The detailed explanation for the grade.
+
+DO NOT include any text, notes, or descriptions outside of the JSON array. The response must start with '[' and end with ']'.
+
+Now, analyze the image and return the JSON.
+"""
         
-        extraction_data = {
-            "model": VISION_MODEL_NAME,
+        vision_grading_data = {
+            "model": VISION_MODEL_NAME, # Sadece Vision modelini kullanıyoruz
             "messages": [
                 {
                     "role": "user",
-                    "content": extraction_prompt,
+                    "content": vision_grading_prompt,
                     "images": [image_base64]
                 }
             ],
             "stream": False
         }
-        extraction_response = requests.post(OLLAMA_API_URL, json=extraction_data, timeout=20)
-        extraction_response.raise_for_status()
-        extraction_output = json.loads(extraction_response.text)
-        raw_text = extraction_output['message']['content'].strip()
-        print(f"ADIM 1 BAŞARILI: Llama Vision'dan dönen ham metin: {raw_text}")
-    except Exception as e:
-        print(f"HATA: Llama Vision ham metin çevirme başarısız oldu. Hata: {e}")
-        return Response(
-            {"detail": f"Ham metin çevirme (Llama Vision) hatası: {e}"},
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
-    end_time_vision = time.time()
-    vision_duration = (end_time_vision - start_time_vision) * 1000
-    print(f"Llama Vision işlem süresi: {vision_duration:.2f} ms")
+        vision_grading_response = requests.post(OLLAMA_API_URL, json=vision_grading_data, timeout=90) # Timeout artırıldı
+        vision_grading_response.raise_for_status()
+        llm_output = json.loads(vision_grading_response.text)
+        graded_content_str = llm_output['message']['content'].strip()
+        print(f"ADIM 1 BAŞARILI: Llama Vision'dan dönen ham yanıt: {graded_content_str}")
 
-    # Step 2: Llama-3p1-8b ile ham metni yapılandır
-    print("ADIM 2: Llama-3p1-8b modeli ham metni yapılandırmak için çağrılıyor...")
-    start_time_structuring = time.time()
-    structuring_prompt = f"""
-    You are an AI assistant that structures text from an exam paper. Given the raw text from a scanned exam page, your task is to identify and separate the questions and their corresponding answers.
-    
-    Provide the output in a JSON array format. For each item, use the keys 'question' and 'answer'.
-    
-    Example format:
-    [
-      {{
-        "question": "Question text here.",
-        "answer": "Answer text here."
-      }},
-      {{
-        "question": "Another question text.",
-        "answer": "Another answer text."
-      }}
-    ]
-    
-    Raw text from the page:
-    ---
-    {raw_text}
-    ---
-    
-    Please provide the JSON array now:
-    """
+        # Sağlam JSON temizleme ve ayrıştırma
+        # NOT: Llama Vision bu kadar karmaşık bir JSON'ı her zaman düzgün döndüremeyebilir.
+        # Regex ile sadece ilk ve son köşeli parantez arasındaki bloğu yakalamaya çalışıyoruz.
+        match = re.search(r'\[.*\]', graded_content_str, re.DOTALL)
+        if match:
+            cleaned_str = match.group(0)
+            print(f"TEMİZLENMİŞ YANIT (Regex ile): {cleaned_str}")
+            try:
+                final_graded_content = json.loads(cleaned_str)
+            except json.JSONDecodeError:
+                print("UYARI: Temizlenmiş yanıtta JSON formatı bozuk. Ham yanıt olduğu gibi dönülecek.")
+                # JSON bozuksa, ham çıktıyı "raw_llm_output" olarak dönüyoruz.
+                return Response(
+                    {
+                        "error": "Llama Vision JSON formatını bozuk döndürdü.",
+                        "raw_llm_output": graded_content_str,
+                        "processing_times_ms": {
+                            "llama_vision_and_grading": round((time.time() - start_time_vision_and_grading) * 1000, 2)
+                        }
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+        else:
+            print("UYARI: Yanıtta JSON dizisi bulunamadı. Ham yanıt olduğu gibi dönülecek.")
+            # JSON dizisi bulunamazsa, ham çıktıyı "raw_llm_output" olarak dönüyoruz.
+            return Response(
+                {
+                    "error": "Llama Vision yanıtında geçerli bir JSON dizisi bulunamadı.",
+                    "raw_llm_output": graded_content_str,
+                    "processing_times_ms": {
+                        "llama_vision_and_grading": round((time.time() - start_time_vision_and_grading) * 1000, 2)
+                    }
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
 
-    structuring_data = {
-        "model": TEXT_MODEL_NAME,
-        "messages": [
-            {
-                "role": "user",
-                "content": structuring_prompt,
-            }
-        ],
-        "stream": False
-    }
-
-    try:
-        structuring_response = requests.post(OLLAMA_API_URL, json=structuring_data, timeout=20)
-        structuring_response.raise_for_status()
-        llm_output = json.loads(structuring_response.text)
-        structured_content_str = llm_output['message']['content'].strip()
-        print(f"ADIM 2 BAŞARILI: Llama-3p1-8b modelinden dönen ham yanıt: {structured_content_str}")
-        
-        try:
-            structured_content_json = json.loads(structured_content_str)
-        except json.JSONDecodeError:
-            print("UYARI: LLM'den geçersiz JSON formatı döndü. Ham yanıt saklanıyor.")
-            structured_content_json = {"error": "Invalid JSON format from LLM", "raw_response": structured_content_str}
-        
     except requests.exceptions.RequestException as e:
-        print(f"HATA: Yapılandırma modeli bağlantı hatası veya hazır değil. Hata: {e}")
+        print(f"HATA: Llama Vision bağlantı hatası veya hazır değil. Hata: {e}")
         return Response(
-            {"detail": f"Yapılandırma modeli (Llama) bağlantı hatası veya hazır değil. Hata: {e}"},
+            {"detail": f"Llama Vision modeli bağlantı hatası veya hazır değil. Hata: {e}"},
             status=status.HTTP_503_SERVICE_UNAVAILABLE
         )
     except Exception as e:
         print(f"HATA: İşlem sırasında beklenmedik bir hata oluştu: {e}")
         return Response({"detail": f"İşlem sırasında beklenmedik bir hata oluştu: {e}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-    end_time_structuring = time.time()
-    structuring_duration = (end_time_structuring - start_time_structuring) * 1000
+    
+    end_time_vision_and_grading = time.time()
+    vision_and_grading_duration = (end_time_vision_and_grading - start_time_vision_and_grading) * 1000
 
+    # Nihai yanıtı oluştur
     final_response = {
-        "raw_text_from_vision": raw_text,
-        "structured_content": structured_content_json,
+        "graded_content": final_graded_content,
         "processing_times_ms": {
-            "llama_vision": round(vision_duration, 2),
-            "llama_structuring": round(structuring_duration, 2),
+            "llama_vision_and_grading": round(vision_and_grading_duration, 2),
         }
     }
+
     print(f"SONUÇ: Son yanıt döndürülüyor: {json.dumps(final_response, indent=2)}")
     return Response(final_response, status=status.HTTP_200_OK)
-
-
-
 
 # --- API View: Tek Metin Cevap ---
 
